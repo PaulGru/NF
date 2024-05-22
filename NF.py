@@ -1,6 +1,7 @@
 import torch
 import torch.nn as nn
 
+
 class PlanarFlow(nn.Module):
     def __init__(self, dim):
         super(PlanarFlow, self).__init__()
@@ -15,6 +16,7 @@ class PlanarFlow(nn.Module):
         z_new = z + self.u * activation
         log_det_jacobian = torch.log(torch.abs(1 + torch.mm(self.u, psi.t())))
         return z_new, log_det_jacobian.sum(1, keepdim=True)
+
 
 class NormalizingFlowModel(nn.Module):
     def __init__(self, base_distribution, flows, prior_distribution):
@@ -35,7 +37,7 @@ class NormalizingFlowModel(nn.Module):
     def loss(self, z, x):
         z_transformed, log_qzK, _ = self.forward(z)
 
-        # Assurez-vous que la dimension de sortie est [batch_size, 1] pour log_pzK
+        # Assurez-vous que la dim de sortie est [batch_size, 1] pour log_pzK
         log_pzK = self.prior_distribution.log_prob(z_transformed).unsqueeze(1)
 
         # Assurez-vous que log_px_zK est également de dimension [batch_size, 1]
@@ -47,15 +49,17 @@ class NormalizingFlowModel(nn.Module):
         # Calcul de la perte comme la négative de l'ELBO moyenné
         return -(log_px_zK + log_pzK - log_qzK).mean()
 
+
 def log_likelihood_fn(x, z):
     # Placeholder for the actual likelihood function of data given z
     return -((x - z) ** 2).sum(dim=1)  # Example assuming Gaussian likelihood
+
 
 # Example usage
 dim = 5
 base_dist = torch.distributions.Normal(torch.zeros(dim), torch.ones(dim))
 prior_dist = torch.distributions.Normal(torch.zeros(dim), torch.ones(dim))
-flows = [PlanarFlow(dim) for _ in range(3)]  # Stack multiple flows for deeper transformation
+flows = [PlanarFlow(dim) for _ in range(3)]  # Stack multiple flows for deeper transfo
 model = NormalizingFlowModel(base_dist, flows, prior_dist)
 optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
 
@@ -69,7 +73,7 @@ def train(model, optimizer, steps=10000, batch_size=100):
         optimizer.zero_grad()
 
         z = model.base_distribution.sample((batch_size,))
-        x = torch.randn(batch_size, dim)  # Assuming x is generated for demonstration
+        x = torch.randn(batch_size, dim)  # Assuming x is generated for demo
         loss = model.loss(z, x)
 
         loss.backward()
@@ -77,5 +81,6 @@ def train(model, optimizer, steps=10000, batch_size=100):
 
         if step % 100 == 0:
             print(f"Step {step}, Loss: {loss.item()}")
+
 
 train(model, optimizer)
