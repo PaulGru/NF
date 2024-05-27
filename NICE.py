@@ -8,15 +8,6 @@ import torch.optim as optim
 from torchvision import transforms, datasets
 
 
-
-import torch
-import torch.nn as nn
-import torch.optim as optim
-from torchvision import transforms, datasets
-import matplotlib.pyplot as plt
-import numpy as np
-
-
 cfg = {
   'MODEL_SAVE_PATH': './saved_models/',
 
@@ -24,13 +15,13 @@ cfg = {
 
   'TRAIN_BATCH_SIZE': 256,
 
-  'TRAIN_EPOCHS': 10,
+  'TRAIN_EPOCHS': 75,
 
   'NUM_COUPLING_LAYERS': 2,
 
   'NUM_NET_LAYERS': 2,  # neural net layers for each coupling layer
 
-  'NUM_HIDDEN_UNITS': 50
+  'NUM_HIDDEN_UNITS': 100
 }
 
 class CouplingLayer(nn.Module):
@@ -157,27 +148,24 @@ model.train()
 
 opt = optim.Adam(model.parameters())
 
-# Stocker la log-vraisemblance à chaque époque
-log_likelihoods = []
+for i in range(cfg['TRAIN_EPOCHS']):
+    mean_likelihood = 0.0
+    num_minibatches = 0
 
-for epoch in range(cfg['TRAIN_EPOCHS']):
-    for i, (x, _) in enumerate(data_loader):
-        opt.zero_grad()
-        x = x.view(-1, 784)  # Aplatir les images MNIST pour les entrées du modèle
-        z, log_likelihood = model(x)
-        loss = -torch.mean(log_likelihood)  # Minimiser le NLL (Negative Log Likelihood)
+    for batch_id, (x, _) in enumerate(dataloader):
+        x = x.view(-1, 784) + torch.rand(784) / 256.
+
+        x = torch.clamp(x, 0, 1)
+
+        z, likelihood = model(x)
+        loss = -torch.mean(likelihood)   # NLL
+
         loss.backward()
         opt.step()
+        model.zero_grad()
 
-    log_likelihoods.append(-loss.item())  # Stocker la log-vraisemblance moyenne pour affichage
+        mean_likelihood -= loss
+        num_minibatches += 1
 
-    print(f'Epoch {epoch + 1} completed. Log Likelihood: {-loss.item()}')
-
-# Affichage de la progression de la log-vraisemblance
-plt.figure(figsize=(10, 5))
-plt.plot(log_likelihoods, label='Log Likelihood')
-plt.xlabel('Epoch')
-plt.ylabel('Log Likelihood')
-plt.title('Progression de la Log Likelihood au cours des époques')
-plt.legend()
-plt.show()
+    mean_likelihood /= num_minibatches
+    print('Epoch {} completed. Log Likelihood: {}'.format(i, mean_likelihood))
