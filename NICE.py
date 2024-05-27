@@ -2,21 +2,35 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Distribution, Uniform
+import numpy as np
+import os
+import torch.optim as optim
+from torchvision import transforms, datasets
+
+
+
+import torch
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import transforms, datasets
+import matplotlib.pyplot as plt
+import numpy as np
+
 
 cfg = {
   'MODEL_SAVE_PATH': './saved_models/',
 
-  'USE_CUDA': True,
+  'USE_CUDA': False,
 
   'TRAIN_BATCH_SIZE': 256,
 
-  'TRAIN_EPOCHS': 75,
+  'TRAIN_EPOCHS': 10,
 
-  'NUM_COUPLING_LAYERS': 4,
+  'NUM_COUPLING_LAYERS': 2,
 
-  'NUM_NET_LAYERS': 6,  # neural net layers for each coupling layer
+  'NUM_NET_LAYERS': 2,  # neural net layers for each coupling layer
 
-  'NUM_HIDDEN_UNITS': 1000
+  'NUM_HIDDEN_UNITS': 50
 }
 
 class CouplingLayer(nn.Module):
@@ -70,18 +84,8 @@ class LogisticDistribution(Distribution):
         return -(F.softplus(x) + F.softplus(-x))
 
     def sample(self, size):
-        if cfg['USE_CUDA']:
-            z = Uniform(torch.cuda.FloatTensor([0.]), torch.cuda.FloatTensor([1.])).sample(size)
-        else:
-            z = Uniform(torch.FloatTensor([0.]), torch.FloatTensor([1.])).sample(size)
-
+        z = Uniform(torch.FloatTensor([0.]), torch.FloatTensor([1.])).sample(size)
         return torch.log(z) - torch.log(1. - z)
-
-
-
-import numpy as np
-import torch
-import torch.nn as nn
 
 
 class NICE(nn.Module):
@@ -136,15 +140,9 @@ class NICE(nn.Module):
         if orientation:
             mask = 1. - mask     # flip mask orientation
         mask = torch.tensor(mask)
-        if cfg['USE_CUDA']:
-            mask = mask.cuda()
-        return mask.float()
-  
 
-import os
-import torch
-import torch.optim as optim
-from torchvision import transforms, datasets
+        return mask.float()
+
 
 # Data
 transform = transforms.ToTensor()
@@ -153,41 +151,33 @@ dataloader = torch.utils.data.DataLoader(dataset=dataset, batch_size=cfg['TRAIN_
                                          shuffle=True, pin_memory=True)
 
 model = NICE(data_dim=784, num_coupling_layers=cfg['NUM_COUPLING_LAYERS'])
-if cfg['USE_CUDA']:
-    device = torch.device('cuda')
-    model = model.to(device)
 
 # Train the model
 model.train()
 
 opt = optim.Adam(model.parameters())
 
-epoch = cfg['TRAIN_EPOCHS']
+# Stocker la log-vraisemblance à chaque époque
+log_likelihoods = []
 
-for i in range(epoch):
-    mean_likelihood = 0.0
-    num_minibatches = 0
-
-    for batch_id, (x, _) in enumerate(dataloader):
-        x = x.view(-1, 784) + torch.rand(784) / 256.
-        if cfg['USE_CUDA']:
-            x = x.cuda()
-
-        x = torch.clamp(x, 0, 1)
-
-        z, likelihood = model(x)
-        loss = -torch.mean(likelihood)   # NLL
-
+for epoch in range(cfg['TRAIN_EPOCHS']):
+    for i, (x, _) in enumerate(data_loader):
+        opt.zero_grad()
+        x = x.view(-1, 784)  # Aplatir les images MNIST pour les entrées du modèle
+        z, log_likelihood = model(x)
+        loss = -torch.mean(log_likelihood)  # Minimiser le NLL (Negative Log Likelihood)
         loss.backward()
         opt.step()
-        model.zero_grad()
 
-        mean_likelihood -= loss
-        num_minibatches += 1
+    log_likelihoods.append(-loss.item())  # Stocker la log-vraisemblance moyenne pour affichage
 
-    mean_likelihood /= num_minibatches
-    print('Epoch {} completed. Log Likelihood: {}'.format(i, mean_likelihood))
+    print(f'Epoch {epoch + 1} completed. Log Likelihood: {-loss.item()}')
 
-    if epoch % 5 == 0:
-        save_path = os.path.join(cfg['MODEL_SAVE_PATH'], '{}.pt'.format(epoch))
-        torch.save(model.state_dict(), save_path)
+# Affichage de la progression de la log-vraisemblance
+plt.figure(figsize=(10, 5))
+plt.plot(log_likelihoods, label='Log Likelihood')
+plt.xlabel('Epoch')
+plt.ylabel('Log Likelihood')
+plt.title('Progression de la Log Likelihood au cours des époques')
+plt.legend()
+plt.show()
