@@ -19,7 +19,12 @@ from torch.autograd import Variable
 
 def ode_solve(z0, t0, t1, f):
     """
-    Simplest Euler ODE initial value solver
+    Simple Euler ODE initial Value solver
+    :param z0: initial value
+    :param t0: initial time stamp
+    :param t1: target time stamp
+    :param f: ODE function
+    :return: z1
     """
     h_max = 0.05
     n_steps = math.ceil((abs(t1 - t0)/h_max).max().item())
