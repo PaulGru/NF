@@ -14,17 +14,17 @@ cov = [[1, 0.8], [0.8, 1]]
 X = np.random.multivariate_normal(mean, cov, 5000)
 
 temp = X.T
-#plt.plot(temp[0], temp[1], 'x')
-#plt.axis('equal')
-#plt.show()
-X[:5,:]
+plt.plot(temp[0], temp[1], 'x')
+plt.axis('equal')
+plt.show()
+
 
 class Dataset2D(Dataset):
     def __init__(self, data):
         mean = [0, 0]
         cov = [[1, 0.8], [0.8, 1]]
         self.size = len(data)
-        self.origX = data 
+        self.origX = data
         self.X = torch.tensor(self.origX).float()
 
     def __len__(self):
@@ -48,63 +48,51 @@ def backbone(input_width, network_width=10):
     )
 
 
-
 class NormalizingFlow2D(nn.Module):
     def __init__(self, num_coupling, width):
         super(NormalizingFlow2D, self).__init__()
         self.num_coupling = num_coupling
         self.s = nn.ModuleList([backbone(1, width) for x in range(num_coupling)])
         self.t = nn.ModuleList([backbone(1, width) for x in range(num_coupling)])
-        
+
         # Learnable scaling parameters for outputs of S
         self.s_scale = torch.nn.Parameter(torch.randn(num_coupling))
         self.s_scale.requires_grad = True
 
     def forward(self, x):
-        if model.training:
-            s_vals = []
-            x1, x2 = x[:, :1], x[:, 1:]
-
+        original_x = x.clone()  # Create a copy of x to avoid modifying the original tensor
+        s_vals = []
+        if self.training:
             for i in range(self.num_coupling):
-                # Alternating which var gets transformed
                 if i % 2 == 0:
-                    y1=x1
-                    s = self.s_scale[i] * self.s[i](x1)
-                    y2 = torch.exp(s) * x2 + self.t[i](x1) 
-                
+                    s = self.s_scale[i] * self.s[i](original_x[:, :1])
+                    temp = torch.exp(s) * original_x[:, 1:] + self.t[i](original_x[:, :1])
+                    original_x = torch.cat((original_x[:, :1], temp), dim=1)
                 else:
-                    y2 = x2
-                    s = self.s_scale[i] * self.s[i](x2)
-                    y1 = torch.exp(s) * x1 + self.t[i](x2)
-                
+                    s = self.s_scale[i] * self.s[i](original_x[:, 1:])
+                    temp = torch.exp(s) * original_x[:, :1] + self.t[i](original_x[:, 1:])
+                    original_x = torch.cat((temp, original_x[:, 1:]), dim=1)
                 s_vals.append(s)
-          
-            # Return outputs and vars needed for determinant
-            return torch.cat([y1, y2], 1), torch.cat(s_vals)
-        
+            return original_x, torch.cat(s_vals)
         else:
-            # Assume x is sampled from random Gaussians
-            y1, y2 = x[:, :1], x[:, 1:]
-             
             for i in reversed(range(self.num_coupling)):
-                # Alternating which var gets transformed
                 if i % 2 == 0:
-                    x1 = y1
-                    s = self.s_scale[i] * self.s[i](y1)
-                    x2 = (y2 - self.t[i](y1)) * torch.exp(-s)
-                
+                    s = self.s_scale[i] * self.s[i](original_x[:, :1])
+                    temp = (original_x[:, 1:] - self.t[i](original_x[:, :1])) * torch.exp(-s)
+                    original_x = torch.cat((original_x[:, :1], temp), dim=1)
                 else:
-                    x2 = y2
-                    s = self.s_scale[i] * self.s[i](y2)
-                    x1 = (y1 - self.t[i](y2)) * torch.exp(-s)
+                    s = self.s_scale[i] * self.s[i](original_x[:, 1:])
+                    temp = (original_x[:, :1] - self.t[i](original_x[:, 1:])) * torch.exp(-s)
+                    original_x = torch.cat((temp, original_x[:, 1:]), dim=1)
+            return original_x
 
-            return torch.cat([x1, x2], 1)
+
 
 
 def train_loop(dataloader, model, loss_fn, optimizer, report_iters=10):
     size = len(dataloader)
     for batch, X in enumerate(dataloader):
-       
+
         # Compute prediction and loss
         y, s = model(X)
         loss = loss_fn(y, s, batch_size)
@@ -137,7 +125,7 @@ def loss_fn(y, s, batch_size):
     # -log p_x = 0.5 * y**2 + s1 + s2
     logpx = -torch.sum(0.5 * y**2)
     det = torch.sum(s)
-    
+
     ret = -(logpx + det)
     return torch.div(ret, batch_size)
 
@@ -161,7 +149,7 @@ for t in range(epochs):
     print(f"Epoch {t+1}\n-------------------------------")
     train_loop(train_dataloader, model, loss_fn, optimizer)
     test_loop(test_dataloader, model, loss_fn)
- 
+
 print("Done!")
 
 fig, ((ax1, ax2)) = plt.subplots(1, 2, figsize=(16,8))
