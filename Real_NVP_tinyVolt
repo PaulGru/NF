@@ -1,0 +1,56 @@
+
+import warnings
+import threadpoolctl
+
+# Ignorer l'avertissement spécifique
+warnings.filterwarnings("ignore", message="Found Intel OpenMP")
+
+# Limiter le nombre de threads pour éviter les conflits OpenMP
+threadpoolctl.threadpool_limits(limits=1)
+
+import torch
+import torch.utils.data as data
+from sklearn.datasets import make_moons
+import torch.nn as nn
+import torch.nn.functional as F
+
+from torch.distributions.normal import Normal
+
+#from main import train_and_eval, train_loader, test_loader
+
+import matplotlib.pyplot as plt
+
+import numpy as np
+import torch
+
+
+
+class NumpyDataset(data.Dataset):
+    def __init__(self, array):
+        super().__init__()
+        self.array = array
+
+    def __len__(self):
+        return len(self.array)
+
+    def __getitem__(self, index):
+        return self.array[index]
+
+
+n_train, n_test = 2000, 1000
+train_data, train_labels = make_moons(n_samples=n_train, noise=0.1)
+test_data, test_labels = make_moons(n_samples=n_test, noise=0.1)
+
+train_loader = data.DataLoader(NumpyDataset(train_data), batch_size=128, shuffle=True)
+test_loader = data.DataLoader(NumpyDataset(test_data), batch_size=128, shuffle=True)
+
+
+
+_, axes = plt.subplots(1,2,figsize=(12,4))
+x,y = train_loader.dataset.array[:,0], train_loader.dataset.array[:,1]
+_ = axes[0].scatter(x,y)
+_ = axes[0].set_title('Training data')
+
+x,y = test_loader.dataset.array[:,0], test_loader.dataset.array[:,1]
+_ = axes[1].scatter(x,y)
+_ = axes[1].set_title('Testing data')
