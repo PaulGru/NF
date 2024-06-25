@@ -1,26 +1,21 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import Distribution, Uniform
+from torch.distributions import Distribution, Normal
 import numpy as np
-import os
 import torch.optim as optim
-from torchvision import transforms, datasets
-
+from sklearn.datasets import make_moons
+from sklearn.preprocessing import StandardScaler
+from torch.utils.data import TensorDataset, DataLoader
+import matplotlib.pyplot as plt
 
 cfg = {
   'MODEL_SAVE_PATH': './saved_models/',
-
   'USE_CUDA': False,
-
   'TRAIN_BATCH_SIZE': 256,
-
-  'TRAIN_EPOCHS': 75,
-
-  'NUM_COUPLING_LAYERS': 2,
-
-  'NUM_NET_LAYERS': 2,  # neural net layers for each coupling layer
-
+  'TRAIN_EPOCHS': 1000,
+  'NUM_COUPLING_LAYERS': 10,
+  'NUM_NET_LAYERS': 10,  # neural net layers for each coupling layer
   'NUM_HIDDEN_UNITS': 100
 }
 
@@ -67,16 +62,16 @@ class ScalingLayer(nn.Module):
         return torch.exp(self.log_scale_vector) * x, logdet + log_det_jacobian
 
 
-class LogisticDistribution(Distribution):
+class GaussianDistribution(Distribution):
     def __init__(self):
         super().__init__()
+        self.dist = Normal(0, 1)
 
     def log_prob(self, x):
-        return -(F.softplus(x) + F.softplus(-x))
+        return self.dist.log_prob(x).sum(dim=1)
 
     def sample(self, size):
-        z = Uniform(torch.FloatTensor([0.]), torch.FloatTensor([1.])).sample(size)
-        return torch.log(z) - torch.log(1. - z)
+        return self.dist.sample(size)
 
 
 class NICE(nn.Module):
@@ -96,12 +91,12 @@ class NICE(nn.Module):
 
         self.scaling_layer = ScalingLayer(data_dim=data_dim)
 
-        self.prior = LogisticDistribution()
+        self.prior = GaussianDistribution()
 
     def forward(self, x, invert=False):
         if not invert:
             z, log_det_jacobian = self.f(x)
-            log_likelihood = torch.sum(self.prior.log_prob(z), dim=1) + log_det_jacobian
+            log_likelihood = self.prior.log_prob(z) + log_det_jacobian
             return z, log_likelihood
 
         return self.f_inverse(x)
@@ -122,7 +117,7 @@ class NICE(nn.Module):
         return x
 
     def sample(self, num_samples):
-        z = self.prior.sample([num_samples, self.data_dim]).view(self.samples, self.data_dim)
+        z = self.prior.sample([num_samples, self.data_dim]).view(num_samples, self.data_dim)
         return self.f_inverse(z)
 
     def _get_mask(self, dim, orientation=True):
@@ -136,12 +131,15 @@ class NICE(nn.Module):
 
 
 # Data
-transform = transforms.ToTensor()
-dataset = datasets.MNIST(root='./data/mnist', train=True, transform=transform, download=True)
-dataloader = torch.utils.data.DataLoader(dataset=dataset, batch_size=cfg['TRAIN_BATCH_SIZE'],
-                                         shuffle=True, pin_memory=True)
+X, y = make_moons(n_samples=1000, noise=0.1)
+scaler = StandardScaler()
+X = scaler.fit_transform(X)
+X = torch.tensor(X, dtype=torch.float32)
 
-model = NICE(data_dim=784, num_coupling_layers=cfg['NUM_COUPLING_LAYERS'])
+dataset = TensorDataset(X)
+dataloader = DataLoader(dataset, batch_size=cfg['TRAIN_BATCH_SIZE'], shuffle=True)
+
+model = NICE(data_dim=2, num_coupling_layers=cfg['NUM_COUPLING_LAYERS'])
 
 # Train the model
 model.train()
@@ -152,11 +150,7 @@ for i in range(cfg['TRAIN_EPOCHS']):
     mean_likelihood = 0.0
     num_minibatches = 0
 
-    for batch_id, (x, _) in enumerate(dataloader):
-        x = x.view(-1, 784) + torch.rand(784) / 256.
-
-        x = torch.clamp(x, 0, 1)
-
+    for batch_id, (x,) in enumerate(dataloader):
         z, likelihood = model(x)
         loss = -torch.mean(likelihood)   # NLL
 
@@ -164,8 +158,23 @@ for i in range(cfg['TRAIN_EPOCHS']):
         opt.step()
         model.zero_grad()
 
-        mean_likelihood -= loss
+        mean_likelihood -= loss.item()
         num_minibatches += 1
 
     mean_likelihood /= num_minibatches
     print('Epoch {} completed. Log Likelihood: {}'.format(i, mean_likelihood))
+
+# Visualize the transformation from Gaussian distribution to two moons
+num_samples = 1000
+with torch.no_grad():
+    z = model.prior.sample([num_samples, model.data_dim]).view(num_samples, model.data_dim)
+    x_transformed = model.f_inverse(z).numpy()
+
+plt.figure(figsize=(8, 6))
+plt.scatter(x_transformed[:, 0], x_transformed[:, 1], c='blue', s=5, label='Transformed Points')
+plt.title('Transformed Points from Gaussian Distribution to Two Moons')
+plt.xlabel('x1')
+plt.ylabel('x2')
+plt.legend()
+plt.grid(True)
+plt.show()

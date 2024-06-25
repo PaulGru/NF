@@ -70,11 +70,16 @@ for epoch in range(num_epochs):
             sample_z = torch.randn(100, dims)
             transformed_sample, _ = model(sample_z)
 
+        # Detach tensors from the gradient graph for plotting
+        sample_z = sample_z.detach().numpy()  # Corrected to use sample_z
+        transformed_sample = transformed_sample.detach().numpy()
+
         plt.figure(figsize=(12, 6))
         plt.subplot(1, 2, 1)
         plt.title("Original Two Moons Distribution")
-        plt.scatter(data[:, 0], data[:, 1], alpha=0.6)
+        plt.scatter(sample_z[:, 0], sample_z[:, 1], alpha=0.6)
         plt.subplot(1, 2, 2)
         plt.title("Transformed Distribution")
-        plt.scatter(transformed_data[:, 0], transformed_data[:, 1], alpha=0.6)
+        plt.scatter(transformed_sample[:, 0], transformed_sample[:, 1], alpha=0.6)
         plt.show()
+
