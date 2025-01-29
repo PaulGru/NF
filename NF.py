@@ -1,86 +1,146 @@
+"""
+https://arxiv.org/pdf/1505.05770
+"""
+# Les données récupérées proviennent de https://github.com/e-hulten/planar-flows/blob/master/target_distribution.py
+
 import torch
 import torch.nn as nn
+import matplotlib.pyplot as plt
+import seaborn as sns
+from torch.distributions import MultivariateNormal
+from typing import Callable, List
 
 
+# Define TargetDistribution (identique à ton code)
+class TargetDistribution:
+    def __init__(self, name: str):
+        self.func = self.get_target_distribution(name)
+
+    def __call__(self, z: torch.Tensor) -> torch.Tensor:
+        return self.func(z)
+
+    @staticmethod
+    def get_target_distribution(name: str) -> Callable[[torch.Tensor], torch.Tensor]:
+        w1 = lambda z: torch.sin(2 * torch.pi * z[:, 0] / 4)
+        w2 = lambda z: 3 * torch.exp(-0.5 * ((z[:, 0] - 1) / 0.6) ** 2)
+        w3 = lambda z: 3 * torch.sigmoid((z[:, 0] - 1) / 0.3)
+
+        if name == "U_1":
+            def U_1(z):
+                u = 0.5 * ((torch.norm(z, 2, dim=1) - 2) / 0.4) ** 2
+                u -= torch.log(
+                    torch.exp(-0.5 * ((z[:, 0] - 2) / 0.6) ** 2)
+                    + torch.exp(-0.5 * ((z[:, 0] + 2) / 0.6) ** 2)
+                )
+                return u
+            return U_1
+
+        elif name == "U_2":
+            def U_2(z):
+                u = 0.5 * ((z[:, 1] - w1(z)) / 0.4) ** 2
+                return u
+            return U_2
+
+        elif name == "U_3":
+            def U_3(z):
+                u = -torch.log(
+                    torch.exp(-0.5 * ((z[:, 1] - w1(z)) / 0.35) ** 2)
+                    + torch.exp(-0.5 * ((z[:, 1] - w1(z) + w2(z)) / 0.35) ** 2)
+                    + 1e-6
+                )
+                return u
+            return U_3
+
+        elif name == "U_4":
+            def U_4(z):
+                u = -torch.log(
+                    torch.exp(-0.5 * ((z[:, 1] - w1(z)) / 0.4) ** 2)
+                    + torch.exp(-0.5 * ((z[:, 1] - w1(z) + w3(z)) / 0.35) ** 2)
+                    + 1e-6
+                )
+                return u
+            return U_4
+
+
+# Define PlanarFlow and NormalizingFlowModel (identique à ton code)
 class PlanarFlow(nn.Module):
-    def __init__(self, dim):
+    def __init__(self, latent_dim):
         super(PlanarFlow, self).__init__()
-        self.w = nn.Parameter(torch.randn(1, dim))
-        self.u = nn.Parameter(torch.randn(1, dim))
-        self.b = nn.Parameter(torch.randn(1))
+        self.weight = nn.Parameter(torch.randn(1, latent_dim) * 0.01)
+        self.scale = nn.Parameter(torch.randn(1, latent_dim) * 0.01)
+        self.bias = nn.Parameter(torch.randn(1))
 
     def forward(self, z):
-        linear = torch.mm(z, self.w.t()) + self.b
+        linear = torch.mm(z, self.weight.t()) + self.bias
         activation = torch.tanh(linear)
-        psi = (1 - activation.pow(2)) * self.w  # derivative of tanh
-        z_new = z + self.u * activation
-        log_det_jacobian = torch.log(torch.abs(1 + torch.mm(self.u, psi.t())))
-        return z_new, log_det_jacobian.sum(1, keepdim=True)
+        activation_derivative = 1 - activation.pow(2)
+        psi = activation_derivative * self.weight
+        z_transformed = z + self.scale * activation
+        det_jacobian = torch.abs(1 + torch.mm(self.scale, psi.t()))
+        log_det_jacobian = torch.log(1e-4 + det_jacobian)
+        return z_transformed, log_det_jacobian
 
 
 class NormalizingFlowModel(nn.Module):
-    def __init__(self, base_distribution, flows, prior_distribution):
+    def __init__(self, flows, target_dist):
         super(NormalizingFlowModel, self).__init__()
-        self.base_distribution = base_distribution
-        self.prior_distribution = prior_distribution
+        self.base_distribution = MultivariateNormal(torch.zeros(2), torch.eye(2))
+        self.target_distribution = target_dist
         self.flows = nn.ModuleList(flows)
 
     def forward(self, z):
-        log_qz0 = self.base_distribution.log_prob(z)
-        sum_log_det_jacobians = 0
+        log_det_jacobian_sum = 0
         for flow in self.flows:
             z, log_det_jacobian = flow(z)
-            sum_log_det_jacobians += log_det_jacobian
-        log_qzK = log_qz0 - sum_log_det_jacobians
-        return z, log_qzK, sum_log_det_jacobians
+            log_det_jacobian_sum += log_det_jacobian
+        return z, log_det_jacobian_sum
 
-    def loss(self, z, x):
-        z_transformed, log_qzK, _ = self.forward(z)
-
-        # Assurez-vous que la dim de sortie est [batch_size, 1] pour log_pzK
-        log_pzK = self.prior_distribution.log_prob(z_transformed).unsqueeze(1)
-
-        # Assurez-vous que log_px_zK est également de dimension [batch_size, 1]
-        log_px_zK = log_likelihood_fn(x, z_transformed).unsqueeze(1)
-
-        # Assurez-vous que log_qzK est correctement dimensionné
-        log_qzK = log_qzK.unsqueeze(1)
-
-        # Calcul de la perte comme la négative de l'ELBO moyenné
-        return -(log_px_zK + log_pzK - log_qzK).mean()
+    def loss(self, z_0, z, log_det_jacobian_sum):
+        log_prob_base = self.base_distribution.log_prob(z_0)
+        target_density_log_prob = -self.target_distribution(z)
+        return (log_prob_base - target_density_log_prob - log_det_jacobian_sum).mean()
 
 
-def log_likelihood_fn(x, z):
-    # Placeholder for the actual likelihood function of data given z
-    return -((x - z) ** 2).sum(dim=1)  # Example assuming Gaussian likelihood
+# Plotting function for a grid
+def plot_comparison(target_names: List[str], flows: List[int], steps=5000, batch_size=128, lr=1e-3):
+    fig, axes = plt.subplots(len(target_names), len(flows), figsize=(15, 15))
+
+    for i, target_name in enumerate(target_names):
+        target_dist = TargetDistribution(target_name)
+
+        for j, K in enumerate(flows):
+            # Define and train the model
+            model = NormalizingFlowModel([PlanarFlow(2) for _ in range(K)], target_dist)
+            optimizer = torch.optim.Adam(model.parameters(), lr=lr)
+
+            # Training loop
+            for step in range(steps):
+                z0 = model.base_distribution.sample((batch_size,))
+                zk, log_jacobian = model(z0)
+                loss = model.loss(z0, zk, log_jacobian)
+                optimizer.zero_grad()
+                loss.backward()
+                optimizer.step()
+
+            # Generate samples for plotting
+            with torch.no_grad():
+                z0 = model.base_distribution.sample((1000,))
+                zk, _ = model(z0)
+                zk = zk.detach().numpy()
+
+            # Create density plot
+            ax = axes[i, j]
+            sns.kdeplot(x=zk[:, 0], y=zk[:, 1], ax=ax, fill=True, cmap="viridis")
+            ax.set_title(f"Target: {target_name}, K={K}")
+            ax.set_xlim(-4, 4)
+            ax.set_ylim(-4, 4)
+
+    plt.tight_layout()
+    plt.show()
 
 
-# Example usage
-dim = 5
-base_dist = torch.distributions.Normal(torch.zeros(dim), torch.ones(dim))
-prior_dist = torch.distributions.Normal(torch.zeros(dim), torch.ones(dim))
-flows = [PlanarFlow(dim) for _ in range(3)]  # Stack multiple flows for deeper transfo
-model = NormalizingFlowModel(base_dist, flows, prior_dist)
-optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
-
-# Training loop not included, refer to previous example
-
-
-# Training loop
-def train(model, optimizer, steps=10000, batch_size=100):
-    model.train()
-    for step in range(steps):
-        optimizer.zero_grad()
-
-        z = model.base_distribution.sample((batch_size,))
-        x = torch.randn(batch_size, dim)  # Assuming x is generated for demo
-        loss = model.loss(z, x)
-
-        loss.backward()
-        optimizer.step()
-
-        if step % 100 == 0:
-            print(f"Step {step}, Loss: {loss.item()}")
-
-
-train(model, optimizer)
+# Main script
+if __name__ == "__main__":
+    target_names = ["U_1", "U_2", "U_3", "U_4"]
+    flows = [2, 8, 32]
+    plot_comparison(target_names, flows)

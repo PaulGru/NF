@@ -1,0 +1,194 @@
+import torch
+import torch.nn as nn
+import matplotlib.pyplot as plt
+import seaborn as sns
+
+# Planar Flow Transformation
+class PlanarFlow(nn.Module):
+    def __init__(self, latent_dim):
+        super(PlanarFlow, self).__init__()
+        self.weight = nn.Parameter(torch.randn(1, latent_dim))  # w
+        self.scale = nn.Parameter(torch.randn(1, latent_dim))   # u
+        self.bias = nn.Parameter(torch.randn(1))               # b
+
+    def forward(self, z):
+        # Linear transformation
+        linear = torch.mm(z, self.weight.t()) + self.bias
+        
+        # Activation
+        activation = torch.tanh(linear)
+        activation_derivative = 1 - activation.pow(2)  # tanh derivative
+        
+        # Compute the transformation
+        psi = activation_derivative * self.weight  # psi = tanh'(w⊤z + b) * w
+        z_transformed = z + self.scale * activation  # f(z) = z + u * tanh(w⊤z + b)
+        
+        # Compute log determinant of the Jacobian
+        det_jacobian = torch.abs(1 + torch.mm(self.scale, psi.t()))
+        log_det_jacobian = torch.log(det_jacobian)
+        
+        return z_transformed, log_det_jacobian
+
+
+# Normalizing Flow Model
+class NormalizingFlowModel(nn.Module):
+    def __init__(self, base_dist, flows, log_prob_target):
+        super(NormalizingFlowModel, self).__init__()
+        self.base_distribution = base_dist
+        self.log_prob_target = log_prob_target
+        self.flows = nn.ModuleList(flows)
+
+    def forward(self, z):
+        log_prob_base = self.base_distribution.log_prob(z)  # Log-probability from base
+        log_det_jacobian_sum = 0  # Sum of log-determinants
+
+        # Apply all flows sequentially
+        for flow in self.flows:
+            z, log_det_jacobian = flow(z)
+            log_det_jacobian_sum += log_det_jacobian
+        
+        # Log-probability in the final transformed space
+        log_prob_final = log_prob_base - log_det_jacobian_sum
+        return z, log_prob_final, log_det_jacobian_sum
+
+    def loss(self, z):
+        # Transform z through the flow
+        z_transformed, log_qzK, _ = self.forward(z)
+
+        # Log-probability of the transformed samples under the target distribution
+        log_pzK = self.log_prob_target(z_transformed)
+
+        # Calculate negative ELBO
+        return -(log_pzK - log_qzK).mean()
+
+
+# Define a multimodal target distribution
+def sample_multimodal(num_samples, means, covariances, weights=None):
+    """
+    Generate samples from a multimodal Gaussian distribution.
+    """
+    num_modes = len(means)
+    if weights is None:
+        weights = torch.ones(num_modes) / num_modes  # Equal weights
+    modes = torch.multinomial(weights, num_samples, replacement=True)
+    samples = []
+    for i in range(num_modes):
+        mode_samples = torch.distributions.MultivariateNormal(
+            loc=means[i],
+            covariance_matrix=covariances[i]
+        ).sample((torch.sum(modes == i),))
+        samples.append(mode_samples)
+    return torch.cat(samples, dim=0)
+
+
+def log_prob_multimodal(z, means, covariances, weights=None):
+    """
+    Compute the log-probability of a multimodal Gaussian distribution.
+    """
+    num_modes = len(means)
+    if weights is None:
+        weights = torch.ones(num_modes) / num_modes
+
+    log_probs = []
+    for i in range(num_modes):
+        mvn = torch.distributions.MultivariateNormal(
+            loc=means[i],
+            covariance_matrix=covariances[i]
+        )
+        log_probs.append(mvn.log_prob(z) + torch.log(weights[i]))
+
+    return torch.logsumexp(torch.stack(log_probs, dim=0), dim=0)
+
+
+# Visualization Function
+def visualize_flow_comparison(model, means, covariances, weights, num_samples=2000):
+    """
+    Visualize the progression of samples through the flows and compare with the target distribution.
+    """
+    # Step 1: Samples from the base distribution
+    z_base = model.base_distribution.sample((num_samples,))  
+
+    # Step 2: Apply transformations step-by-step
+    z_transformed = z_base
+    samples_per_step = [z_transformed]
+    for flow in model.flows:
+        z_transformed, _ = flow(z_transformed)
+        samples_per_step.append(z_transformed)
+
+    # Step 3: Samples from the target distribution
+    target_samples = sample_multimodal(num_samples, means, covariances, weights)
+
+    # Step 4: Plot the results
+    num_steps = len(samples_per_step)
+    fig, axes = plt.subplots(1, num_steps + 1, figsize=(5 * (num_steps + 1), 5))
+
+    for i, samples in enumerate(samples_per_step):
+        ax = axes[i]
+        sns.kdeplot(
+            x=samples[:, 0].detach().numpy(),
+            y=samples[:, 1].detach().numpy(),
+            fill=True, ax=ax
+        )
+        ax.set_title(f"Step {i}" if i > 0 else "Base Distribution")
+
+    # Final column: Target distribution
+    sns.kdeplot(
+        x=target_samples[:, 0].detach().numpy(),
+        y=target_samples[:, 1].detach().numpy(),
+        fill=True, ax=axes[-1]
+    )
+    axes[-1].set_title("Target Distribution")
+    plt.tight_layout()
+    plt.show()
+
+
+# Main Script
+if __name__ == "__main__":
+    # Latent space dimension
+    latent_dim = 2  
+
+    # Base distribution (source)
+    base_dist = torch.distributions.MultivariateNormal(
+        loc=torch.zeros(latent_dim), 
+        covariance_matrix=torch.eye(latent_dim)
+    )
+
+    # Define multimodal target distribution
+    means = [torch.tensor([3.0, 3.0]), torch.tensor([-3.0, -3.0])]
+    covariances = [torch.eye(2) * 0.5, torch.eye(2) * 0.8]
+    weights = torch.tensor([0.5, 0.5])  # Equal weights
+
+    # Log-probability function for the multimodal target
+    def log_prob_target(z):
+        return log_prob_multimodal(z, means, covariances, weights)
+
+    # Define the flow model
+    num_flows = 10
+    flows = [PlanarFlow(latent_dim) for _ in range(num_flows)]
+    model = NormalizingFlowModel(base_dist, flows, log_prob_target)
+
+    # Optimizer
+    optimizer = torch.optim.Adam(model.parameters(), lr=0.01)
+
+    # Training function
+    def train(model, optimizer, steps, batch_size=100):
+        model.train()
+        for step in range(steps):
+            optimizer.zero_grad()
+
+            # Sample from base distribution
+            z_samples = model.base_distribution.sample((batch_size,))
+
+            # Compute loss and backpropagate
+            loss = model.loss(z_samples)
+            loss.backward()
+            optimizer.step()
+
+            if step % 100 == 0:
+                print(f"Step {step}, Loss: {loss.item()}")
+
+    # Train the model
+    train(model, optimizer, steps=5000)
+
+    # Visualize the transformation
+    visualize_flow_comparison(model, means, covariances, weights, num_samples=1000)
