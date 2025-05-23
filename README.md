@@ -1,2 +1,1 @@
-# NF
-Variational Inference for NF
+Normalizing flow things
